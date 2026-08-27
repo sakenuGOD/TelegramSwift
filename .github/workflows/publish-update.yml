@@ -39,7 +39,7 @@ jobs:
           archive=$(find "$RUNNER_TEMP/release" -maxdepth 1 -type f -name 'Telegram-*.zip' -print -quit)
           test -n "$archive"
           unzip -q "$archive" -d "$RUNNER_TEMP/unpacked"
-          app=$(find "$RUNNER_TEMP/unpacked" -type d -name Telegram.app -print -quit)
+          app=$(find "$RUNNER_TEMP/unpacked" -path '*/__MACOSX/*' -prune -o -type d -name Telegram.app -print -quit)
           test -n "$app"
 
           version=$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$app/Contents/Info.plist")
