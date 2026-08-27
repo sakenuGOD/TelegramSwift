@@ -16,6 +16,21 @@ import Postbox
 import ColorPalette
 import TelegramMedia
 
+private func longPasteDocumentURL(_ text: String) -> URL? {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("TelegramLongText", isDirectory: true)
+    do {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let url = directory.appendingPathComponent("Текст_\(formatter.string(from: Date())).txt")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    } catch {
+        return nil
+    }
+}
+
 protocol ChatInputDelegate : AnyObject {
     func inputChanged(height:CGFloat, animated:Bool);
 }
@@ -1217,6 +1232,41 @@ class ChatInputView: View, Notifable {
         if let window = _window, self.chatState == .normal || self.chatState == .editing {
             
             if let string = pasteboard.string(forType: .string) {
+                let currentText = textView.string()
+                let selectedRange = textView.selectedRange
+                let selectionLength = min(selectedRange.length, currentText.length)
+                let resultingLength = currentText.length - selectionLength + string.length
+                let containsFile = pasteboard.types?.contains(where: { type in
+                    return type == .kFilenames || type == .kFileUrl || type == .tiff
+                }) == true
+
+                if self.chatState == .normal && !containsFile && resultingLength > Int(interaction.maxInputCharacters) {
+                    let documentText: String
+                    if selectedRange.location != NSNotFound, NSMaxRange(selectedRange) <= currentText.length {
+                        documentText = currentText.nsstring.replacingCharacters(in: selectedRange, with: string)
+                    } else {
+                        documentText = currentText + string
+                    }
+                    verifyAlert_button(
+                        for: window,
+                        header: "Длинный текст",
+                        information: "Текст длиннее лимита Telegram. Отправить его одним UTF-8 документом, удобным для ИИ?",
+                        ok: "Отправить документом",
+                        cancel: "Вставить как текст",
+                        successHandler: { [weak interaction] _ in
+                            guard let interaction, let url = longPasteDocumentURL(documentText) else {
+                                alert(for: window, info: "Не удалось создать документ.")
+                                return
+                            }
+                            interaction.showPreviewSender([url], false, nil)
+                        },
+                        cancelHandler: { [weak interaction] in
+                            interaction?.appendText(string)
+                        }
+                    )
+                    return true
+                }
+
                 interaction.update { current in
                     if let disabled = current.interfaceState.composeDisableUrlPreview, disabled.lowercased() == string.lowercased() {
                         return current.updatedInterfaceState {$0.withUpdatedComposeDisableUrlPreview(nil)}

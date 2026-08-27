@@ -1,0 +1,51 @@
+name: Sync Telegram upstream
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: telegram-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the working fork
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge the newest upstream source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "telegram-context-updater"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add telegram-upstream https://github.com/overtake/TelegramSwift.git
+          git fetch telegram-upstream release
+
+          if git merge-base --is-ancestor telegram-upstream/release HEAD; then
+            echo "Already current."
+            exit 0
+          fi
+
+          if git merge --no-edit telegram-upstream/release; then
+            git push origin HEAD:master
+          else
+            git merge --abort
+            existing_issue=$(gh issue list --state open --search 'Upstream merge needs attention in:title' --json number --jq '.[0].number // empty')
+            if [ -z "$existing_issue" ]; then
+              gh issue create \
+                --title "Upstream merge needs attention" \
+                --body "The scheduled Telegram upstream merge conflicted with the context-export patch. The last successful app release remains active and no appcast was changed."
+            fi
+            exit 1
+          fi

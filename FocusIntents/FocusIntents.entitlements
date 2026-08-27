@@ -6,8 +6,8 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>6N38VWS5BX.ru.keepcoder.Telegram.FocusIntents</string>
-		<string>6N38VWS5BX.ru.keepcoder.Telegram</string>
+		<string>CU8UJ55239.com.sakenugod.TelegramAI.FocusIntents</string>
+		<string>CU8UJ55239.com.sakenugod.TelegramAI</string>
 	</array>
 </dict>
 </plist>

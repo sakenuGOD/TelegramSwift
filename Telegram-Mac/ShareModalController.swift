@@ -733,6 +733,71 @@ class ShareLinkObject : ShareObject {
     }
 }
 
+final class ShareAIContextFileObject: ShareObject {
+    private let path: String
+    private let mimeType: String
+
+    init(_ context: AccountContext, path: String, mimeType: String? = nil) {
+        self.path = path
+        if let mimeType {
+            self.mimeType = mimeType
+        } else if path.nsstring.pathExtension.lowercased() == "md" {
+            self.mimeType = "text/markdown"
+        } else if path.nsstring.pathExtension.lowercased() == "txt" {
+            self.mimeType = "text/plain"
+        } else {
+            self.mimeType = "application/pdf"
+        }
+        super.init(context)
+    }
+
+    override var messagesCount: Int {
+        return 1
+    }
+
+    override func perform(to peerIds: [PeerId], threadId: Int64?, comment: ChatTextInputState? = nil, sendPaidMessageStars: [PeerId: StarsAmount] = [:]) -> Signal<Never, String> {
+        let fileName = path.nsstring.lastPathComponent
+        let fileAttributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let fileSize = (fileAttributes?[.size] as? NSNumber)?.int64Value
+
+        for peerId in peerIds {
+            let resource = LocalFileReferenceMediaResource(localFilePath: path, randomId: arc4random64())
+            let media = TelegramMediaFile(
+                fileId: MediaId(namespace: 0, id: 0),
+                partialReference: nil,
+                resource: resource,
+                previewRepresentations: [],
+                videoThumbnails: [],
+                immediateThumbnailData: nil,
+                mimeType: mimeType,
+                size: fileSize,
+                attributes: [.FileName(fileName: fileName)],
+                alternativeRepresentations: []
+            )
+            let text = comment?.inputText ?? ""
+            let messageAttributes = attributes(peerId, sendPaidMessageStars: sendPaidMessageStars[peerId])
+            let message = EnqueueMessage.message(
+                text: text,
+                attributes: messageAttributes,
+                inlineStickers: [:],
+                mediaReference: AnyMediaReference.standalone(media: media),
+                threadId: threadIds[peerId] ?? threadId,
+                replyToMessageId: nil,
+                replyToStoryId: nil,
+                localGroupingKey: nil,
+                correlationId: nil,
+                bubbleUpEmojiOrStickersets: []
+            )
+            _ = enqueueMessages(account: context.account, peerId: peerId, messages: [message]).start()
+        }
+        return .complete()
+    }
+
+    override var searchPlaceholderKey: String {
+        return "ShareModal.Search.ForwardPlaceholder"
+    }
+}
+
 
 class ShareUrlObject : ShareObject {
     let url:String
@@ -1239,10 +1304,87 @@ final class ForwardMessagesObject : ShareObject {
         }.allSatisfy { $0 }
         return !excludePeerIds.contains(peer.id) && canSend
     }
+
+    private var photoMessages: [(Message, TelegramMediaImage)]? {
+        var result: [(Message, TelegramMediaImage)] = []
+        for message in messages {
+            guard let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage else {
+                return nil
+            }
+            result.append((message, image))
+        }
+        return result.isEmpty ? nil : result.sorted(by: { MessageIndex($0.0) < MessageIndex($1.0) })
+    }
+
+    private func resendPhotosWithCaption(
+        _ photos: [(Message, TelegramMediaImage)],
+        to peerIds: [PeerId],
+        threadId: Int64?,
+        comment: ChatTextInputState,
+        sendPaidMessageStars: [PeerId: StarsAmount]
+    ) -> Signal<Never, String> {
+        var signals: [Signal<[MessageId?], NoError>] = []
+
+        for peerId in peerIds {
+            var groupingKeys: [Int: Int64] = [:]
+            var outgoing: [EnqueueMessage] = []
+
+            for (index, value) in photos.enumerated() {
+                let originalCaption = value.0.text
+                let caption: String
+                // Telegram stores an album caption on one media item, but renders
+                // it below the whole group. Repeat it for the leading item of
+                // every 10-photo group so each resulting post has one shared caption.
+                if index % 10 == 0 {
+                    caption = originalCaption.isEmpty ? comment.inputText : "\(comment.inputText)\n\n\(originalCaption)"
+                } else {
+                    caption = originalCaption
+                }
+
+                var messageAttributes = attributes(peerId, sendPaidMessageStars: sendPaidMessageStars[peerId])
+                if !caption.isEmpty {
+                    messageAttributes.append(TextEntitiesMessageAttribute(entities: []))
+                }
+
+                let groupIndex = index / 10
+                let groupingKey: Int64?
+                if photos.count > 1 {
+                    if groupingKeys[groupIndex] == nil {
+                        groupingKeys[groupIndex] = arc4random64()
+                    }
+                    groupingKey = groupingKeys[groupIndex]
+                } else {
+                    groupingKey = nil
+                }
+
+                outgoing.append(EnqueueMessage.message(
+                    text: caption,
+                    attributes: messageAttributes,
+                    inlineStickers: [:],
+                    mediaReference: AnyMediaReference.message(message: MessageReference(value.0), media: value.1),
+                    threadId: threadIds[peerId] ?? threadId,
+                    replyToMessageId: nil,
+                    replyToStoryId: nil,
+                    localGroupingKey: groupingKey,
+                    correlationId: nil,
+                    bubbleUpEmojiOrStickersets: []
+                ))
+            }
+
+            signals.append(enqueueMessages(account: context.account, peerId: peerId, messages: outgoing))
+        }
+
+        return combineLatest(signals)
+        |> ignoreValues
+        |> castError(String.self)
+    }
     
     
     
     override func perform(to peerIds: [PeerId], threadId: Int64?, comment: ChatTextInputState? = nil, sendPaidMessageStars:[PeerId: StarsAmount] = [:]) -> Signal<Never, String> {
+        if let comment = comment, !comment.inputText.isEmpty, let photos = photoMessages {
+            return resendPhotosWithCaption(photos, to: peerIds, threadId: threadId, comment: comment, sendPaidMessageStars: sendPaidMessageStars)
+        }
         
         if peerIds.count == 1 {
             let context = self.context

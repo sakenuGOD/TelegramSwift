@@ -31,6 +31,10 @@ class ChatVoiceContentView: ChatAudioContentView {
     private var playAfterDragging: Bool = false
     private var transcribeAudio: TranscribeAudioTextView?
 
+    override var selectableTextViews: [TextView] {
+        return transcribeAudio?.selectableTextViews ?? []
+    }
+
     private var downloadingView: RadialProgressView?
     
     private var unreadView: View?

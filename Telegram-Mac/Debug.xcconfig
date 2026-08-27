@@ -12,8 +12,8 @@
 
 #include "common.xcconfig"
 
-DSA_PEM_FILE = dsa_pub.pem
-SFEED_URL = https:$(SIMPLE_SLASH)/mac-updates.telegram.org/beta/versions.xml
+DSA_PEM_FILE = dsa_pub_fork.pem
+SFEED_URL = https:$(SIMPLE_SLASH)/raw.githubusercontent.com/sakenuGOD/TelegramSwift/ai-updates/appcast.xml
 SOURCE = DEBUG
 
 TYPE = -D'BETA'

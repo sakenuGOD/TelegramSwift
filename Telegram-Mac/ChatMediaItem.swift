@@ -758,6 +758,10 @@ class ChatMediaView: ChatRowView, ModalPreviewRowViewProtocol {
         super.updateMouse(animated: animated)
         self.contentNode?.updateMouse()
     }
+
+    override var selectableTextViews: [TextView] {
+        return super.selectableTextViews + (contentNode?.selectableTextViews ?? [])
+    }
     
     override func contentFrame(_ item: ChatRowItem) -> NSRect {
         var rect = super.contentFrame(item)
@@ -876,6 +880,5 @@ class ChatMediaView: ChatRowView, ModalPreviewRowViewProtocol {
         return self.contentNode
     }
 }
-
 
 

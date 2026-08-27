@@ -678,3 +678,349 @@ class ChatSelectText : NSObject {
     }
     
 }
+
+private func aiContextResourceData(
+    context: AccountContext,
+    resource: TelegramMediaResource,
+    reference: MediaResourceReference,
+    userLocation: MediaResourceUserLocation,
+    userContentType: MediaResourceUserContentType
+) -> Signal<Data?, NoError> {
+    let mediaBox = context.account.postbox.mediaBox
+    let signal = Signal<Data?, NoError> { subscriber in
+        let fetchDisposable = fetchedMediaResource(
+            mediaBox: mediaBox,
+            userLocation: userLocation,
+            userContentType: userContentType,
+            reference: reference,
+            statsCategory: .image
+        ).start()
+
+        let dataDisposable = mediaBox.resourceData(resource).start(next: { data in
+            guard data.complete else {
+                return
+            }
+            let value = data.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: data.path), options: .mappedIfSafe)
+            subscriber.putNext(value)
+            subscriber.putCompletion()
+        })
+
+        return ActionDisposable {
+            fetchDisposable.dispose()
+            dataDisposable.dispose()
+        }
+    }
+
+    return signal
+    |> take(1)
+    |> timeout(90.0, queue: .mainQueue(), alternate: .single(nil))
+}
+
+private func aiContextPreviewData(for message: Message, context: AccountContext) -> Signal<Data?, NoError> {
+    for media in message.media {
+        if let image = media as? TelegramMediaImage, let representation = image.representations.last {
+            let imageReference = ImageMediaReference.message(message: MessageReference(message), media: image)
+            return aiContextResourceData(
+                context: context,
+                resource: representation.resource,
+                reference: imageReference.resourceReference(representation.resource),
+                userLocation: imageReference.userLocation,
+                userContentType: imageReference.userContentType
+            )
+        }
+
+        if let file = media as? TelegramMediaFile, file.isVideo || file.probablySticker {
+            let fileReference = FileMediaReference.message(message: MessageReference(message), media: file)
+            if let representation = file.previewRepresentations.last {
+                return aiContextResourceData(
+                    context: context,
+                    resource: representation.resource,
+                    reference: fileReference.resourceReference(representation.resource),
+                    userLocation: fileReference.userLocation,
+                    userContentType: fileReference.userContentType
+                )
+            }
+            if file.probablySticker {
+                // Static stickers do not always carry a separate thumbnail.
+                // Their WebP resource is directly renderable by AppKit.
+                return aiContextResourceData(
+                    context: context,
+                    resource: file.resource,
+                    reference: fileReference.resourceReference(file.resource),
+                    userLocation: fileReference.userLocation,
+                    userContentType: fileReference.userContentType
+                )
+            }
+        }
+    }
+    return .single(nil)
+}
+
+private func aiContextHasVisualMedia(_ message: Message) -> Bool {
+    return message.media.contains { media in
+        if media is TelegramMediaImage {
+            return true
+        }
+        if let file = media as? TelegramMediaFile {
+            return file.isVideo || file.probablySticker
+        }
+        return false
+    }
+}
+
+private func aiContextReplySummary(_ message: Message) -> String? {
+    guard let reply = message.replyAttribute else {
+        return nil
+    }
+    let repliedMessage = message.associatedMessages[reply.messageId]
+    let author = repliedMessage?.effectiveAuthor?.displayTitle ?? "сообщение"
+    let sourceText = reply.quote?.text ?? repliedMessage?.text ?? ""
+    let compactText = sourceText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    if compactText.isEmpty {
+        return "Ответ на \(author)"
+    }
+    return "Ответ на \(author): \(String(compactText.prefix(280)))"
+}
+
+private func aiContextMarkdown(messages: [Message], chatTitle: String) -> String? {
+    guard let first = messages.first, let last = messages.last else {
+        return nil
+    }
+
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "ru_RU")
+    formatter.dateFormat = "dd.MM.yyyy HH:mm"
+
+    var output = "# Контекст из Telegram\n\n"
+    output += "Чат: \(chatTitle)  \n"
+    output += "Период: \(formatter.string(from: Date(timeIntervalSince1970: TimeInterval(first.timestamp)))) — \(formatter.string(from: Date(timeIntervalSince1970: TimeInterval(last.timestamp))))\n\n"
+
+    for message in messages {
+        let author = message.forwardInfo?.authorTitle ?? message.effectiveAuthor?.displayTitle ?? "Неизвестный автор"
+        let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
+        output += "## [\(formatter.string(from: date))] \(author)\n\n"
+
+        if let reply = aiContextReplySummary(message) {
+            output += "> \(reply)\n\n"
+        }
+
+        if !message.text.isEmpty {
+            output += message.text + "\n\n"
+        }
+
+        if let transcription = message.audioTranscription, !transcription.text.isEmpty, !transcription.isPending {
+            let isCircle = (message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile)?.isInstantVideo == true
+            output += isCircle ? "**Расшифровка кружка:**\n\n" : "**Расшифровка голосового:**\n\n"
+            output += transcription.text + "\n\n"
+        } else if let file = message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile {
+            if file.isVoice {
+                output += "_[Голосовое сообщение без готовой расшифровки]_\n\n"
+            } else if file.isInstantVideo {
+                output += "_[Кружок без готовой расшифровки]_\n\n"
+            }
+        }
+    }
+
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("TelegramAIExports", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let safeTitle = chatTitle.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+    let nameFormatter = DateFormatter()
+    nameFormatter.dateFormat = "yyyy-MM-dd_HH-mm"
+    let url = directory.appendingPathComponent("\(safeTitle)_\(nameFormatter.string(from: Date())).md")
+    do {
+        try output.write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    } catch {
+        return nil
+    }
+}
+
+private func aiContextAppend(_ text: String, to result: NSMutableAttributedString, font: NSFont, color: NSColor = .textColor, paragraphSpacing: CGFloat = 0) {
+    let style = NSMutableParagraphStyle()
+    style.paragraphSpacing = paragraphSpacing
+    style.lineSpacing = 2
+    result.append(NSAttributedString(string: text, attributes: [
+        .font: font,
+        .foregroundColor: color,
+        .paragraphStyle: style
+    ]))
+}
+
+private func aiContextImage(from data: Data, maxPixelDimension: CGFloat = 1600, maxDisplaySize: NSSize = NSMakeSize(440, 480)) -> NSImage? {
+    guard let source = NSImage(data: data), source.size.width > 0, source.size.height > 0 else {
+        return nil
+    }
+    let pixelScale = min(1.0, maxPixelDimension / max(source.size.width, source.size.height))
+    let pixelSize = NSMakeSize(max(1, floor(source.size.width * pixelScale)), max(1, floor(source.size.height * pixelScale)))
+    let displayScale = min(1.0, min(maxDisplaySize.width / source.size.width, maxDisplaySize.height / source.size.height))
+    let displaySize = NSMakeSize(floor(source.size.width * displayScale), floor(source.size.height * displayScale))
+    let result = NSImage(size: pixelSize)
+    result.lockFocus()
+    NSColor.white.setFill()
+    NSBezierPath(rect: NSRect(origin: .zero, size: pixelSize)).fill()
+    source.draw(in: NSRect(origin: .zero, size: pixelSize), from: NSRect(origin: .zero, size: source.size), operation: .sourceOver, fraction: 1.0)
+    result.unlockFocus()
+
+    // Keep the PDF compact for model input. Text and transcriptions remain
+    // lossless; only photographic pixels are resized and JPEG-compressed.
+    if let tiffData = result.tiffRepresentation,
+       let bitmap = NSBitmapImageRep(data: tiffData),
+       let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.72]),
+       let compressed = NSImage(data: jpegData) {
+        compressed.size = displaySize
+        return compressed
+    }
+    result.size = displaySize
+    return result
+}
+
+private func aiContextPDF(messages: [Message], previews: [Data?], chatTitle: String) -> String? {
+    guard !messages.isEmpty else {
+        return nil
+    }
+
+    let result = NSMutableAttributedString()
+    aiContextAppend("Контекст из Telegram\n", to: result, font: .boldSystemFont(ofSize: 22))
+    aiContextAppend("Чат: \(chatTitle)\n", to: result, font: .systemFont(ofSize: 12), color: .darkGray)
+
+    let firstDate = Date(timeIntervalSince1970: TimeInterval(messages.first!.timestamp))
+    let lastDate = Date(timeIntervalSince1970: TimeInterval(messages.last!.timestamp))
+    let periodFormatter = DateFormatter()
+    periodFormatter.locale = Locale(identifier: "ru_RU")
+    periodFormatter.dateStyle = .medium
+    periodFormatter.timeStyle = .short
+    aiContextAppend("Период: \(periodFormatter.string(from: firstDate)) — \(periodFormatter.string(from: lastDate))\n\n", to: result, font: .systemFont(ofSize: 11), color: .darkGray, paragraphSpacing: 8)
+
+    let timeFormatter = DateFormatter()
+    timeFormatter.locale = Locale(identifier: "ru_RU")
+    timeFormatter.dateFormat = "dd.MM.yyyy HH:mm"
+
+    for (index, message) in messages.enumerated() {
+        let author = message.forwardInfo?.authorTitle ?? message.effectiveAuthor?.displayTitle ?? "Неизвестный автор"
+        let date = Date(timeIntervalSince1970: TimeInterval(message.timestamp))
+        aiContextAppend("[\(timeFormatter.string(from: date))] \(author)\n", to: result, font: .boldSystemFont(ofSize: 12), color: NSColor(calibratedRed: 0.12, green: 0.32, blue: 0.62, alpha: 1.0))
+
+        if let reply = aiContextReplySummary(message) {
+            aiContextAppend("↳ \(reply)\n", to: result, font: .italic(10), color: .gray)
+        }
+
+        var renderedPreview = false
+        if let preview = previews[index], let image = aiContextImage(from: preview) {
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            attachment.bounds = NSRect(origin: .zero, size: image.size)
+            result.append(NSAttributedString(attachment: attachment))
+            aiContextAppend("\n", to: result, font: .systemFont(ofSize: 11))
+            renderedPreview = true
+        }
+
+        if !renderedPreview {
+            if message.media.contains(where: { $0 is TelegramMediaImage }) {
+                aiContextAppend("[Фотография: предпросмотр недоступен]\n", to: result, font: .italic(11), color: .gray)
+            } else if let file = message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile, file.isVideo, !file.probablySticker {
+                let kind = file.isInstantVideo ? "Кружок" : "Видео"
+                aiContextAppend("[\(kind): предпросмотр недоступен]\n", to: result, font: .italic(11), color: .gray)
+            }
+        }
+
+        if !message.text.isEmpty {
+            aiContextAppend(message.text + "\n", to: result, font: .systemFont(ofSize: 12))
+        }
+
+        if let sticker = message.media.first(where: { ($0 as? TelegramMediaFile)?.probablySticker == true }) as? TelegramMediaFile {
+            let emoji = sticker.stickerText?.normalizedEmoji ?? ""
+            aiContextAppend(emoji.isEmpty ? "[Стикер]\n" : "[Стикер: \(emoji)]\n", to: result, font: .italic(11), color: .gray)
+        }
+
+        if let transcription = message.audioTranscription, !transcription.text.isEmpty, !transcription.isPending {
+            let kind: String
+            if let file = message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile, file.isInstantVideo {
+                kind = "Расшифровка кружка"
+            } else {
+                kind = "Расшифровка голосового"
+            }
+            aiContextAppend("\(kind):\n", to: result, font: .boldSystemFont(ofSize: 11), color: .darkGray)
+            aiContextAppend(transcription.text + "\n", to: result, font: .systemFont(ofSize: 12))
+        } else if let file = message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile {
+            if file.isVoice {
+                aiContextAppend("[Голосовое сообщение без готовой расшифровки]\n", to: result, font: .italic(11), color: .gray)
+            } else if file.isInstantVideo {
+                aiContextAppend("[Кружок без готовой расшифровки]\n", to: result, font: .italic(11), color: .gray)
+            }
+        }
+
+        aiContextAppend("\n", to: result, font: .systemFont(ofSize: 8), paragraphSpacing: 10)
+    }
+
+    let contentWidth: CGFloat = 500
+    let textView = NSTextView(frame: NSMakeRect(0, 0, contentWidth, 100))
+    textView.isEditable = false
+    textView.isRichText = true
+    textView.drawsBackground = true
+    textView.backgroundColor = .white
+    textView.textContainerInset = NSMakeSize(24, 24)
+    textView.textContainer?.containerSize = NSMakeSize(contentWidth - 48, .greatestFiniteMagnitude)
+    textView.textContainer?.widthTracksTextView = true
+    textView.textStorage?.setAttributedString(result)
+    if let textContainer = textView.textContainer, let layoutManager = textView.layoutManager {
+        layoutManager.ensureLayout(for: textContainer)
+        let usedHeight = ceil(layoutManager.usedRect(for: textContainer).height + 48)
+        textView.setFrameSize(NSMakeSize(contentWidth, max(usedHeight, 100)))
+    }
+
+    let printInfo = NSPrintInfo.shared.copy() as! NSPrintInfo
+    printInfo.paperSize = NSMakeSize(595, 842)
+    printInfo.leftMargin = 36
+    printInfo.rightMargin = 36
+    printInfo.topMargin = 36
+    printInfo.bottomMargin = 36
+    printInfo.horizontalPagination = .fit
+    printInfo.verticalPagination = .automatic
+
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("TelegramAIExports", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let safeTitle = chatTitle.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+    let dateFormatter = DateFormatter()
+    dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm"
+    let path = directory.appendingPathComponent("\(safeTitle)_\(dateFormatter.string(from: Date())).pdf").path
+
+    let operation = NSPrintOperation.pdfOperation(with: textView, inside: textView.bounds, toPath: path, printInfo: printInfo)
+    operation.showsPrintPanel = false
+    operation.showsProgressPanel = false
+    return operation.run() ? path : nil
+}
+
+extension ChatInteraction {
+    func exportSelectedMessagesForAI() {
+        guard let selectedIds = presentation.selectionState?.selectedIds, !selectedIds.isEmpty else {
+            return
+        }
+        let context = self.context
+        let chatTitle = presentation.peer?.displayTitle ?? "Telegram"
+        let messages = context.account.postbox.messagesAtIds(Array(selectedIds))
+        |> mapToSignal { messages -> Signal<String?, NoError> in
+            let sortedMessages = messages.sorted(by: { MessageIndex($0) < MessageIndex($1) })
+            guard !sortedMessages.isEmpty else {
+                return .single(nil)
+            }
+            if !sortedMessages.contains(where: aiContextHasVisualMedia) {
+                return .single(aiContextMarkdown(messages: sortedMessages, chatTitle: chatTitle))
+            }
+            let previewSignals = sortedMessages.map { aiContextPreviewData(for: $0, context: context) }
+            return combineLatest(previewSignals)
+            |> deliverOnMainQueue
+            |> map { previews in
+                return aiContextPDF(messages: sortedMessages, previews: previews, chatTitle: chatTitle)
+            }
+        }
+        |> deliverOnMainQueue
+
+        _ = showModalProgress(signal: messages, for: context.window, timeout: 0.2).start(next: { path in
+            guard let path = path else {
+                alert(for: context.window, info: "Не удалось собрать документ.")
+                return
+            }
+            showModal(with: ShareModalController(ShareAIContextFileObject(context, path: path)), for: context.window)
+        })
+    }
+}

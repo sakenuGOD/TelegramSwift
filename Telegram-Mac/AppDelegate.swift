@@ -30,12 +30,6 @@ import TelegramMedia
 import RLottie
 import KeyboardKey
 
-#if BETA || DEBUG
-import Firebase
-import FirebaseCrashlytics
-#endif
-
-
 //
 //@available(macOS 13, *)
 //class AppIntentObserver : NSObject {
@@ -460,11 +454,7 @@ class AppDelegate: NSResponder, NSApplicationDelegate, NSUserNotificationCenterD
         mw = window
         
         
-        #if BETA || DEBUG
-        FirebaseApp.configure()
-        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(true)
-        Crashlytics.crashlytics().sendUnsentReports()
-        #endif
+        // This fork does not upload diagnostics to Telegram's Firebase project.
         
         
         

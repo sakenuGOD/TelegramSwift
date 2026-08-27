@@ -514,12 +514,10 @@ private class ExternalUpdateDriver : SUBasicUpdateDriver {
 private let disposable = MetaDisposable()
 
 func setAppUpdaterBaseDomain(_ domain: String?) {
-    updater.domain = domain
-    if let domain = domain {
-        updater.host = URL(string: domain)?.host
-    } else {
-        updater.host = nil
-    }
+    // Server-provided Telegram update mirrors belong to the official client.
+    // This fork always follows its own HTTPS appcast and release assets.
+    updater.domain = nil
+    updater.host = nil
 }
 
 
@@ -593,7 +591,16 @@ private func resetUpdater() {
 
 private var updaterSource: UpdaterSource? = nil
 
-func updater_resetWithUpdaterSource(_ source: UpdaterSource, force: Bool = true) {
+func updater_resetWithUpdaterSource(_ requestedSource: UpdaterSource, force: Bool = true) {
+    // A fork must never consume Telegram's internal update channel: an official
+    // binary would replace this build and remove all custom functionality.
+    let source: UpdaterSource
+    switch requestedSource {
+    case let .external(context):
+        source = .external(context: context)
+    case let .internal(context):
+        source = .external(context: context)
+    }
     let state = stateValue.with { $0 }
     switch state.loadingState {
     case .readyToInstall:
@@ -622,12 +629,11 @@ func updater_resetWithUpdaterSource(_ source: UpdaterSource, force: Bool = true)
 private func trySwitchUpdaterBetweenSources() {
     if let source = updaterSource {
         switch source {
-        case let .external(context):
-            #if STABLE || DEBUG || BETA
-            if let context = context {
-                updater_resetWithUpdaterSource(.internal(context: context), force: true)
-            }
-            #endif
+        case .external:
+            // There is deliberately no Telegram-internal fallback. Retrying it
+            // here would immediately normalize back to the same external feed
+            // and spin on transient network failures.
+            return
         case let .internal(context):
             updater_resetWithUpdaterSource(.external(context: context), force: false)
         }
@@ -635,4 +641,3 @@ private func trySwitchUpdaterBetweenSources() {
 }
 
 #endif
-

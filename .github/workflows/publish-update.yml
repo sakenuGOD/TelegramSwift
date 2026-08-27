@@ -1,0 +1,131 @@
+name: Publish signed Telegram update
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to republish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: telegram-update-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out publisher scripts
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Download and inspect the release archive
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release" "$RUNNER_TEMP/unpacked"
+          gh release download "$RELEASE_TAG" --pattern 'Telegram-*.zip' --dir "$RUNNER_TEMP/release"
+          archive=$(find "$RUNNER_TEMP/release" -maxdepth 1 -type f -name 'Telegram-*.zip' -print -quit)
+          test -n "$archive"
+          unzip -q "$archive" -d "$RUNNER_TEMP/unpacked"
+          app=$(find "$RUNNER_TEMP/unpacked" -type d -name Telegram.app -print -quit)
+          test -n "$app"
+
+          version=$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' "$app/Contents/Info.plist")
+          build=$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleVersion"])' "$app/Contents/Info.plist")
+          asset_name=$(basename "$archive")
+          archive_length=$(stat -c %s "$archive")
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "archive_length=$archive_length" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+      - name: Sign the archive and render the appcast
+        env:
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+          ARCHIVE_LENGTH: ${{ steps.release.outputs.archive_length }}
+          ASSET_NAME: ${{ steps.release.outputs.asset_name }}
+          BUILD_VERSION: ${{ steps.release.outputs.build }}
+          DISPLAY_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SPARKLE_DSA_PRIVATE_KEY: ${{ secrets.SPARKLE_DSA_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_DSA_PRIVATE_KEY"
+          printf '%s' "$SPARKLE_DSA_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_dsa.pem"
+          signature=$(openssl dgst -sha1 -binary < "$ARCHIVE" | openssl dgst -sha1 -sign "$RUNNER_TEMP/sparkle_dsa.pem" | openssl base64 -A)
+          test -n "$signature"
+          export SIGNATURE="$signature"
+          export DOWNLOAD_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$ASSET_NAME"
+          python3 - <<'PY'
+          import datetime
+          import html
+          import os
+          from pathlib import Path
+
+          def esc(value: str) -> str:
+              return html.escape(value, quote=True)
+
+          pub_date = datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %z")
+          xml = f'''<?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Telegram automatic fork updates</title>
+              <description>Latest successfully built Telegram context fork.</description>
+              <language>ru</language>
+              <item>
+                <title>Telegram {esc(os.environ["DISPLAY_VERSION"])}</title>
+                <description>Автоматическая сборка с актуальным upstream Telegram и функциями экспорта контекста для ИИ.</description>
+                <pubDate>{pub_date}</pubDate>
+                <enclosure url="{esc(os.environ["DOWNLOAD_URL"])}" sparkle:version="{esc(os.environ["BUILD_VERSION"])}" sparkle:shortVersionString="{esc(os.environ["DISPLAY_VERSION"])}" length="{esc(os.environ["ARCHIVE_LENGTH"])}" type="application/octet-stream" sparkle:dsaSignature="{esc(os.environ["SIGNATURE"])}" />
+                <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+              </item>
+            </channel>
+          </rss>
+          '''
+          Path(os.environ["RUNNER_TEMP"], "appcast.xml").write_text(xml, encoding="utf-8")
+          PY
+
+      - name: Atomically publish the last good appcast
+        env:
+          BUILD_VERSION: ${{ steps.release.outputs.build }}
+        run: |
+          git config user.name "telegram-context-updater"
+          git config user.email "actions@users.noreply.github.com"
+          if git fetch origin ai-updates:ai-updates; then
+            git switch ai-updates
+          else
+            git switch --orphan ai-updates
+          fi
+          cp "$RUNNER_TEMP/appcast.xml" appcast.xml
+          git add appcast.xml
+          if git diff --cached --quiet; then
+            echo "Appcast already publishes build $BUILD_VERSION."
+            exit 0
+          fi
+          git commit -m "Publish Telegram build $BUILD_VERSION"
+          git push origin ai-updates
+
+      - name: Report a publication failure without changing the appcast
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          existing_issue=$(gh issue list --state open --search 'Update publication failed in:title' --json number --jq '.[0].number // empty')
+          if [ -z "$existing_issue" ]; then
+            gh issue create --title "Update publication failed" --body "Publishing release ${RELEASE_TAG:-unknown} failed. The existing appcast was left unchanged, so installed clients remain on the last good build."
+          fi

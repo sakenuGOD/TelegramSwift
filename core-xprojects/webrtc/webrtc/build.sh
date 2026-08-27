@@ -20,6 +20,12 @@ mkdir -p $BUILD_DIR || true
 
 cp -R $SOURCE_DIR $BUILD_DIR
 
+# Clang 21 rejects lifetimebound on parameters of void-returning functions.
+# Older tg_owt snapshots use it on Candidate::set_type, although the value is
+# copied immediately and does not borrow the argument.
+sed -i.bak 's/absl::string_view type ABSL_ATTRIBUTE_LIFETIME_BOUND/absl::string_view type/' "$BUILD_DIR/src/api/candidate.h"
+rm -f "$BUILD_DIR/src/api/candidate.h.bak"
+
 
 
 LIBS=""

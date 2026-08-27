@@ -18,6 +18,7 @@ import Postbox
 class MessageActionsPanelView: Control, Notifable {
     
     private let deleteButton:TextButton = TextButton()
+    private let exportButton:TextButton = TextButton()
     private let forwardButton:TextButton = TextButton()
     private let countTitle:TextView = TextView()
         
@@ -28,11 +29,13 @@ class MessageActionsPanelView: Control, Notifable {
         self.countTitle.isSelectable = false
         
         deleteButton.disableActions()
+        exportButton.disableActions()
         forwardButton.disableActions()
     
         
         forwardButton.direction = .right
         addSubview(deleteButton)
+        addSubview(exportButton)
         addSubview(forwardButton)
         addSubview(countTitle)
         
@@ -57,11 +60,14 @@ class MessageActionsPanelView: Control, Notifable {
     
     override func layout() {
         super.layout()
-        countTitle.resize(frame.width - deleteButton.frame.width - forwardButton.frame.width - 80)
-
         deleteButton.centerY(x:20)
         forwardButton.centerY(x:frame.width - forwardButton.frame.width - 20)
-        countTitle.center()
+        exportButton.centerY(x:forwardButton.frame.minX - exportButton.frame.width - 24)
+
+        let countMinX = deleteButton.frame.maxX + 20
+        let countMaxX = exportButton.frame.minX - 20
+        countTitle.resize(max(40, countMaxX - countMinX))
+        countTitle.centerY(x: countMinX)
     }
     
     required init?(coder: NSCoder) {
@@ -76,12 +82,15 @@ class MessageActionsPanelView: Control, Notifable {
     
     private func updateUI(_ canDelete:Bool , _ canForward:Bool, _ count:Int) -> Void {
         deleteButton.userInteractionEnabled = canDelete
+        exportButton.userInteractionEnabled = canForward && count > 0
         forwardButton.userInteractionEnabled = canForward
         
         deleteButton.set(color: !canDelete ? theme.colors.grayText : theme.colors.redUI, for: .Normal)
+        exportButton.set(color: exportButton.userInteractionEnabled ? theme.colors.accent : theme.colors.grayText, for: .Normal)
         forwardButton.set(color: !canForward ? theme.colors.grayText : theme.colors.accent, for: .Normal)
 
         deleteButton.set(text: leftText, for: .Normal)
+        exportButton.set(text: "Для ИИ", for: .Normal)
         forwardButton.set(text: rightText, for: .Normal)
 
         if let leftIcon = leftIcon {
@@ -96,9 +105,11 @@ class MessageActionsPanelView: Control, Notifable {
         }
         
         deleteButton.scaleOnClick = true
+        exportButton.scaleOnClick = true
         forwardButton.scaleOnClick = true
 
         deleteButton.set(color: !deleteButton.userInteractionEnabled ? theme.colors.grayIcon : leftColor, for: .Normal)
+        exportButton.set(color: !exportButton.userInteractionEnabled ? theme.colors.grayIcon : theme.colors.accent, for: .Normal)
         forwardButton.set(color: !forwardButton.userInteractionEnabled ? theme.colors.grayIcon : rightColor, for: .Normal)
 
         let text = count == 0 ? strings().messageActionsPanelEmptySelected : strings().messageActionsPanelSelectedCountCountable(count)
@@ -139,6 +150,9 @@ class MessageActionsPanelView: Control, Notifable {
         
         forwardButton.set(handler: { [weak chatInteraction] _ in
             chatInteraction?.forwardSelectedMessages()
+        }, for: .Click)
+        exportButton.set(handler: { [weak chatInteraction] _ in
+            chatInteraction?.exportSelectedMessagesForAI()
         }, for: .Click)
         deleteButton.set(handler: { [weak chatInteraction] _ in
             chatInteraction?.deleteSelectedMessages()
@@ -189,6 +203,7 @@ class MessageActionsPanelView: Control, Notifable {
         super.updateLocalizationAndTheme(theme: theme)
         let theme = (theme as! TelegramPresentationTheme)
         deleteButton.set(text: leftText, for: .Normal)
+        exportButton.set(text: "Для ИИ", for: .Normal)
         forwardButton.set(text: rightText, for: .Normal)
 
         if let leftIcon = leftIcon {
@@ -203,12 +218,15 @@ class MessageActionsPanelView: Control, Notifable {
         }
 
         deleteButton.set(color: !deleteButton.userInteractionEnabled ? theme.colors.grayIcon : leftColor, for: .Normal)
+        exportButton.set(color: !exportButton.userInteractionEnabled ? theme.colors.grayIcon : theme.colors.accent, for: .Normal)
         forwardButton.set(color: !forwardButton.userInteractionEnabled ? theme.colors.grayIcon : rightColor, for: .Normal)
         
         _ = deleteButton.sizeToFit(NSZeroSize, NSMakeSize(0, frame.height))
+        _ = exportButton.sizeToFit(NSZeroSize, NSMakeSize(0, frame.height))
         _ = forwardButton.sizeToFit(NSZeroSize, NSMakeSize(0, frame.height))
         
         deleteButton.style = deleteButtonActiveStyle
+        exportButton.style = buttonActiveStyle
         forwardButton.style = buttonActiveStyle
         countTitle.style = countStyle
 

@@ -20,8 +20,9 @@ NAME="openssl-1.1.1s";
 
 CROSS_TOP_MAC="$(xcode-select -p)/Platforms/MacOSX.platform"
 CROSS_SDK_MAC="MacOSX.sdk"
+SDKROOT_MAC="$(xcrun --sdk macosx --show-sdk-path)"
 
-git clone -b OpenSSL_1_1_1-stable https://github.com/openssl/openssl build/${NAME}
+git clone --depth 1 --single-branch -b OpenSSL_1_1_1-stable https://github.com/openssl/openssl build/${NAME}
 
 
 SOURCE_DIR="$OUT_DIR/${NAME}"
@@ -147,7 +148,7 @@ function build_for ()
     "no-tests" \
   )
 
-  ./Configure $PLATFORM -mmacosx-version-min=10.13 no-shared no-tests --prefix="${ABS_TMP_DIR}/${ARCH}" || exit 1
+  ./Configure $PLATFORM -mmacosx-version-min=10.13 -isysroot "$SDKROOT_MAC" no-shared no-tests --prefix="${ABS_TMP_DIR}/${ARCH}" || exit 1
   
   make build_libs || exit 2
   unset CROSS_TOP

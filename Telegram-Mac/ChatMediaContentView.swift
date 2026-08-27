@@ -32,6 +32,13 @@ class ChatMediaContentView: Control, NSDraggingSource, NSPasteboardItemDataProvi
     var positionFlags: LayoutPositionFlags?
     
     var invokeNextMouse: Bool = false 
+
+    /// Text views that participate in drag selection across chat rows.
+    /// Media content normally has no selectable text, but voice-message
+    /// transcription views override this property.
+    var selectableTextViews: [TextView] {
+        return []
+    }
     
     override var backgroundColor: NSColor {
         get {
@@ -401,4 +408,3 @@ class ChatMediaContentView: Control, NSDraggingSource, NSPasteboardItemDataProvi
     }
     
 }
-

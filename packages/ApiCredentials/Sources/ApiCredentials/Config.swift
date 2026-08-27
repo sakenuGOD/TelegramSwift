@@ -9,20 +9,29 @@ public final class ApiEnvironment {
     }
     
     public static var bundleId: String {
-        return "ru.keepcoder.Telegram"
+        return "com.sakenugod.TelegramAI"
     }
     public static var intentsBundleId: String {
         return teamId + "." + bundleId + ".FocusIntents"
     }
     public static var teamId: String {
-        return "6N38VWS5BX"
+        return "CU8UJ55239"
     }
     
     
     
+    private static var sharedContainerRootURL: URL? {
+        // Local fork builds are signed without App Store-only application-group
+        // provisioning. Keep their account completely separate from Telegram by
+        // always using this fork's own Application Support directory. macOS can
+        // return a syntactically valid Group Container URL to an unprovisioned
+        // build even though filesystem access to it will be denied.
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(ApiEnvironment.bundleId, isDirectory: true)
+    }
+
     public static var containerURL: URL? {
-        let appGroupName = ApiEnvironment.group
-        let containerUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)?.appendingPathComponent(prefix)
+        let containerUrl = sharedContainerRootURL?.appendingPathComponent(prefix)
         if let containerUrl = containerUrl {
             try? FileManager.default.createDirectory(at: containerUrl, withIntermediateDirectories: true, attributes: nil)
             return containerUrl
@@ -47,9 +56,7 @@ public final class ApiEnvironment {
     }
     
     public static var legacyContainerURL: URL? {
-        let appGroupName = ApiEnvironment.group
-        let containerUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
-        return containerUrl
+        return sharedContainerRootURL
     }
     
     public static var group: String {
@@ -115,6 +122,3 @@ public final class ApiEnvironment {
         return "org.telegram.telegramPremium.monthly"
     }
 }
-
-
-

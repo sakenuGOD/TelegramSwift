@@ -13,6 +13,10 @@ import TelegramMedia
 final class TranscribeAudioTextView : View {
     private let textView = TextView()
     private var lottiePlayer: LottiePlayerView?
+
+    var selectableTextViews: [TextView] {
+        return textView.textLayout == nil ? [] : [textView]
+    }
     required init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         addSubview(textView)
