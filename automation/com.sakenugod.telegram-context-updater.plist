@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Volumes/Storage/TelegramContextUpdater/build_and_publish_update.sh</string>
+        <string>RUNNER_PATH_IS_SET_BY_INSTALLER</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -18,8 +18,8 @@
     <key>LowPriorityIO</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Volumes/Storage/TelegramContextUpdater/launchd.log</string>
+    <string>STDOUT_PATH_IS_SET_BY_INSTALLER</string>
     <key>StandardErrorPath</key>
-    <string>/Volumes/Storage/TelegramContextUpdater/launchd-error.log</string>
+    <string>STDERR_PATH_IS_SET_BY_INSTALLER</string>
 </dict>
 </plist>

@@ -12,14 +12,18 @@ readonly TEAM_ID="CU8UJ55239"
 readonly SIGN_IDENTITY="${TELEGRAM_CONTEXT_SIGN_IDENTITY:-Supervisor Local Dev}"
 
 if [[ ! -d /Volumes/Storage ]]; then
+    printf '[%s] Storage is not mounted; keeping the current last-good build.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     exit 0
 fi
 
 mkdir -p "$STATE_DIR"
 if ! mkdir "$STATE_DIR/run.lock" 2>/dev/null; then
+    printf '[%s] An update run is already active.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     exit 0
 fi
 trap 'rmdir "$STATE_DIR/run.lock" 2>/dev/null || true' EXIT
+
+printf '[%s] Checking the fork for a new last-good source commit.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
     git clone --recurse-submodules "https://github.com/$REPOSITORY.git" "$SOURCE_DIR"
@@ -42,6 +46,7 @@ fi
 
 source_commit=$(git -C "$SOURCE_DIR" rev-parse HEAD)
 if [[ -f "$STATE_DIR/last-published-commit" ]] && [[ "$(<"$STATE_DIR/last-published-commit")" == "$source_commit" ]]; then
+    printf '[%s] Already current at %s.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$source_commit"
     exit 0
 fi
 
@@ -105,3 +110,4 @@ gh release create "$tag" "$archive" \
 printf '%s\n' "$source_commit" > "$STATE_DIR/last-published-commit"
 git -C "$SOURCE_DIR" restore --worktree Telegram-Mac/Info.plist
 rm -f "$archive"
+printf '[%s] Published %s from %s.\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$tag" "$source_commit"
